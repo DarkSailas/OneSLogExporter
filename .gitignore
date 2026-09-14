@@ -1,8 +1,9 @@
 ## Build and Publish outputs
 bin/
 obj/
-publish/
 dumps/
+!publish/
+!publish/**
 logs/
 state.json
 ui_state.json
