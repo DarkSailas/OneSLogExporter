@@ -114,11 +114,20 @@ public sealed class TechLogWorker(
                     continue;
                 }
 
-                if (!stateTracker.HasFileGrown(filePath, fileInfo.Length))
-                    continue;
-
                 var fileName = Path.GetFileNameWithoutExtension(filePath);
                 if (fileName.Length < 8) continue;
+
+                // Если файл еще не отслеживался и LoadArchive = false -> устанавливаем отсечку на текущий конец (live)
+                if (!stateTracker.HasTrackedState(filePath) && !_options.TechLog.LoadArchive)
+                {
+                    stateTracker.MarkFilePosition(filePath, fileInfo.Length, fileInfo.Length);
+                    await stateTracker.SaveAsync(ct).ConfigureAwait(false);
+                    logger.LogInformation("Файл ТЖ {FileName}: первичный запуск (LoadArchive=false). Установлена отсечка на конец файла {Length} байт (выгружаются только новые live-события).", Path.GetFileName(filePath), fileInfo.Length);
+                    continue;
+                }
+
+                if (!stateTracker.HasFileGrown(filePath, fileInfo.Length))
+                    continue;
 
                 var lastPos = stateTracker.GetLastPosition(filePath);
                 logger.LogDebug("Инкрементальный разбор файла ТЖ {FileName} (процесс {ProcessName}_{ProcessId}) со смещения {LastPos} байт...", Path.GetFileName(filePath), processName, processId, lastPos);
@@ -147,5 +156,9 @@ public sealed class TechLogWorker(
         // Все файлы 1С закрыты, сетевые задержки внешних БД не блокируют 1С!
         // =========================================================================
         await jsonLogTransporter.TransportTechLogsAsync(ct).ConfigureAwait(false);
+
+        // Периодический возврат оперативной памяти в ОС Windows и компактизация LOH
+        System.Runtime.GCSettings.LargeObjectHeapCompactionMode = System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
+        GC.Collect(2, GCCollectionMode.Optimized, blocking: false, compacting: true);
     }
 }

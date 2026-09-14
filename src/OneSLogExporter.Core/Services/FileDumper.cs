@@ -40,7 +40,7 @@ public sealed class FileDumper
     {
         if (!_settings.IsEventLogActive) return;
 
-        var docList = docs.ToList();
+        var docList = docs as IReadOnlyCollection<EventLogDoc> ?? docs.ToList();
         if (docList.Count == 0) return;
 
         await _writeLock.WaitAsync(ct).ConfigureAwait(false);
@@ -112,7 +112,7 @@ public sealed class FileDumper
     {
         if (!_settings.IsTechLogActive) return;
 
-        var docList = docs.ToList();
+        var docList = docs as IReadOnlyCollection<TechLogDoc> ?? docs.ToList();
         if (docList.Count == 0) return;
 
         await _writeLock.WaitAsync(ct).ConfigureAwait(false);

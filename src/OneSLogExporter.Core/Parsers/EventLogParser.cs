@@ -1245,7 +1245,7 @@ public static partial class EventLogParser
 
                 if (!string.IsNullOrEmpty(session))
                 {
-                    dict.SessionUsers[session] = user;
+                    dict.TrackSessionUser(session, user);
                 }
             }
         }
@@ -1255,7 +1255,7 @@ public static partial class EventLogParser
         {
             if (!string.IsNullOrEmpty(user) && user != "<Не указан>" && !user.StartsWith("User #"))
             {
-                dict.SessionUsers[session] = user;
+                dict.TrackSessionUser(session, user);
             }
             else if (dict.SessionUsers.TryGetValue(session, out var cachedUser) && !string.IsNullOrEmpty(cachedUser))
             {
@@ -1264,7 +1264,7 @@ public static partial class EventLogParser
 
             if (!string.IsNullOrEmpty(computer))
             {
-                dict.SessionComputers[session] = computer;
+                dict.TrackSessionComputer(session, computer);
             }
             else if (dict.SessionComputers.TryGetValue(session, out var cachedComp) && !string.IsNullOrEmpty(cachedComp))
             {

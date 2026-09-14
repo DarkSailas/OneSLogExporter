@@ -155,6 +155,8 @@ public sealed class LgfDictionary
     public Dictionary<string, string> Servers { get; } = new(StringComparer.Ordinal);
     public Dictionary<string, string> Ports { get; } = new(StringComparer.Ordinal);
 
+    private const int MaxSessionCacheCapacity = 50_000;
+
     /// <summary>
     /// Динамический кэш привязки сессий к пользователям (SessionID -> UserName).
     /// Автоматически подставляет имя пользователя в транзакции и события данных того же сеанса 1С.
@@ -165,6 +167,24 @@ public sealed class LgfDictionary
     /// Динамический кэш привязки сессий к рабочим станциям (SessionID -> Workstation).
     /// </summary>
     public Dictionary<string, string> SessionComputers { get; } = new(StringComparer.Ordinal);
+
+    public void TrackSessionUser(string session, string user)
+    {
+        if (SessionUsers.Count >= MaxSessionCacheCapacity && !SessionUsers.ContainsKey(session))
+        {
+            SessionUsers.Clear();
+        }
+        SessionUsers[session] = user;
+    }
+
+    public void TrackSessionComputer(string session, string computer)
+    {
+        if (SessionComputers.Count >= MaxSessionCacheCapacity && !SessionComputers.ContainsKey(session))
+        {
+            SessionComputers.Clear();
+        }
+        SessionComputers[session] = computer;
+    }
 }
 
 /// <summary>
@@ -282,6 +302,7 @@ public sealed class TechLogSettings
     public string DirectoryPath { get; set; } = string.Empty;
     public string IndexId { get; set; } = "prod";
     public int MaxAgeHours { get; set; } = 24;
+    public bool LoadArchive { get; set; } = false; // false = только live-события с конца при первом запуске, true = читать всю историю с начала
     public string Separation { get; set; } = "Day"; // "Day" (D), "Month" (M), "Hour" (H), "None" (all)
 }
 

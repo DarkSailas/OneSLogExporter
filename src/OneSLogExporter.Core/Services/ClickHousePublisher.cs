@@ -292,7 +292,7 @@ public sealed class ClickHousePublisher : IDisposable
             ct.ThrowIfCancellationRequested();
             var count = Math.Min(batchSize, docList.Count - i);
 
-            using var ms = new MemoryStream(count * 512);
+            using var ms = new MemoryStream(65536);
             for (var j = 0; j < count; j++)
             {
                 JsonSerializer.Serialize(ms, docList[i + j], LogJsonContext.Compact.TechLogDoc);
@@ -351,7 +351,7 @@ public sealed class ClickHousePublisher : IDisposable
             ct.ThrowIfCancellationRequested();
             var count = Math.Min(batchSize, docList.Count - i);
 
-            using var ms = new MemoryStream(count * 512);
+            using var ms = new MemoryStream(65536);
             for (var j = 0; j < count; j++)
             {
                 JsonSerializer.Serialize(ms, docList[i + j], LogJsonContext.Compact.EventLogDoc);

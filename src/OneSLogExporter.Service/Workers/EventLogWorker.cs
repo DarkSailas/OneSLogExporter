@@ -256,5 +256,9 @@ public sealed class EventLogWorker(
         // Все файлы 1С закрыты, сетевые задержки внешних БД не блокируют 1С!
         // =========================================================================
         await jsonLogTransporter.TransportEventLogsAsync(ct).ConfigureAwait(false);
+
+        // Периодический возврат оперативной памяти в ОС Windows и компактизация LOH
+        System.Runtime.GCSettings.LargeObjectHeapCompactionMode = System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
+        GC.Collect(2, GCCollectionMode.Optimized, blocking: false, compacting: true);
     }
 }
