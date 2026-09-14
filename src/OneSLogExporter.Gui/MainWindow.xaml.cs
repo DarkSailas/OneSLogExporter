@@ -5666,7 +5666,7 @@ public partial class MainWindow : Window
         {
             var profile = new FilterProfile
             {
-                Version = "1.8.0",
+                Version = "1.9.0",
                 ExportedAt = DateTime.Now,
                 Title = includeTg && includeLg ? "Полный профиль фильтрации 1С (ТЖ + ЖР)" : (includeTg ? "Профиль фильтров Технологического Журнала" : "Профиль фильтров Журнала Регистрации"),
                 Description = "Экспортировано из 1С: Log Viewer & Exporter",
