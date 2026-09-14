@@ -57,12 +57,19 @@ public sealed class FileDumper
                 Directory.CreateDirectory(targetDir);
             }
 
+            var maxBytes = GetEffectiveMaxFileBytes();
+            var maxRecords = GetEffectiveMaxFileRecords();
+
             var pattern = string.IsNullOrWhiteSpace(_settings.EventLogFileNamePattern) ? "data_evlog_{N}.json" : _settings.EventLogFileNamePattern;
             var (filePath, mode) = GetTargetFile(targetDir, pattern, prefix);
 
-            var writtenCount = 0;
-            await using (var stream = new FileStream(filePath, mode, FileAccess.Write, FileShare.ReadWrite, 65536, useAsync: true))
-            await using (var writer = new StreamWriter(stream, Utf8WithoutBom))
+            var stream = new FileStream(filePath, mode, FileAccess.Write, FileShare.ReadWrite, 65536, useAsync: true);
+            var writer = new StreamWriter(stream, Utf8WithoutBom);
+            var currentFileRecords = 0;
+            var currentFileBytes = stream.Length;
+            var totalWritten = 0;
+
+            try
             {
                 foreach (var doc in docList)
                 {
@@ -83,15 +90,41 @@ public sealed class FileDumper
                     if (string.IsNullOrWhiteSpace(json) || json.Length < 10 || json == "{}")
                         continue;
 
+                    // Если файл заполнен по лимиту размера или записей -> ротируем в следующий слот
+                    if ((maxBytes > 0 && currentFileBytes >= maxBytes) ||
+                        (maxRecords > 0 && currentFileRecords >= maxRecords))
+                    {
+                        await writer.FlushAsync().ConfigureAwait(false);
+                        await stream.FlushAsync(ct).ConfigureAwait(false);
+                        await writer.DisposeAsync().ConfigureAwait(false);
+                        await stream.DisposeAsync().ConfigureAwait(false);
+
+                        _logger.LogInformation("Файл дампа ЖР достиг лимита ({Bytes:N0} байт / {Rec} записей): {Path}. Ротация в следующий слот.",
+                            currentFileBytes, currentFileRecords, filePath);
+
+                        (filePath, mode) = GetTargetFile(targetDir, pattern, prefix);
+                        stream = new FileStream(filePath, mode, FileAccess.Write, FileShare.ReadWrite, 65536, useAsync: true);
+                        writer = new StreamWriter(stream, Utf8WithoutBom);
+                        currentFileRecords = 0;
+                        currentFileBytes = stream.Length;
+                    }
+
                     await writer.WriteLineAsync(json).ConfigureAwait(false);
-                    writtenCount++;
+                    currentFileRecords++;
+                    currentFileBytes += Encoding.UTF8.GetByteCount(json) + 2;
+                    totalWritten++;
                 }
 
                 await writer.FlushAsync().ConfigureAwait(false);
                 await stream.FlushAsync(ct).ConfigureAwait(false);
             }
+            finally
+            {
+                await writer.DisposeAsync().ConfigureAwait(false);
+                await stream.DisposeAsync().ConfigureAwait(false);
+            }
 
-            _logger.LogInformation("Записано {Count} новых валидных записей ЖР в локальный файл дампа: {FilePath}", writtenCount, filePath);
+            _logger.LogInformation("Записано {Count} новых валидных записей ЖР в локальные файлы дампа (текущий слот: {FilePath})", totalWritten, filePath);
 
             CleanupOldDumps(targetDir);
         }
@@ -129,12 +162,19 @@ public sealed class FileDumper
                 Directory.CreateDirectory(targetDir);
             }
 
+            var maxBytes = GetEffectiveMaxFileBytes();
+            var maxRecords = GetEffectiveMaxFileRecords();
+
             var pattern = string.IsNullOrWhiteSpace(_settings.TechLogFileNamePattern) ? "data_tglog_{N}.json" : _settings.TechLogFileNamePattern;
             var (filePath, mode) = GetTargetFile(targetDir, pattern, prefix);
 
-            var writtenCount = 0;
-            await using (var stream = new FileStream(filePath, mode, FileAccess.Write, FileShare.ReadWrite, 65536, useAsync: true))
-            await using (var writer = new StreamWriter(stream, Utf8WithoutBom))
+            var stream = new FileStream(filePath, mode, FileAccess.Write, FileShare.ReadWrite, 65536, useAsync: true);
+            var writer = new StreamWriter(stream, Utf8WithoutBom);
+            var currentFileRecords = 0;
+            var currentFileBytes = stream.Length;
+            var totalWritten = 0;
+
+            try
             {
                 foreach (var doc in docList)
                 {
@@ -163,15 +203,41 @@ public sealed class FileDumper
                     if (string.IsNullOrWhiteSpace(json) || json.Length < 10 || json == "{}")
                         continue;
 
+                    // Если файл заполнен по лимиту размера или записей -> ротируем в следующий слот
+                    if ((maxBytes > 0 && currentFileBytes >= maxBytes) ||
+                        (maxRecords > 0 && currentFileRecords >= maxRecords))
+                    {
+                        await writer.FlushAsync().ConfigureAwait(false);
+                        await stream.FlushAsync(ct).ConfigureAwait(false);
+                        await writer.DisposeAsync().ConfigureAwait(false);
+                        await stream.DisposeAsync().ConfigureAwait(false);
+
+                        _logger.LogInformation("Файл дампа ТЖ достиг лимита ({Bytes:N0} байт / {Rec} записей): {Path}. Ротация в следующий слот.",
+                            currentFileBytes, currentFileRecords, filePath);
+
+                        (filePath, mode) = GetTargetFile(targetDir, pattern, prefix);
+                        stream = new FileStream(filePath, mode, FileAccess.Write, FileShare.ReadWrite, 65536, useAsync: true);
+                        writer = new StreamWriter(stream, Utf8WithoutBom);
+                        currentFileRecords = 0;
+                        currentFileBytes = stream.Length;
+                    }
+
                     await writer.WriteLineAsync(json).ConfigureAwait(false);
-                    writtenCount++;
+                    currentFileRecords++;
+                    currentFileBytes += Encoding.UTF8.GetByteCount(json) + 2;
+                    totalWritten++;
                 }
 
                 await writer.FlushAsync().ConfigureAwait(false);
                 await stream.FlushAsync(ct).ConfigureAwait(false);
             }
+            finally
+            {
+                await writer.DisposeAsync().ConfigureAwait(false);
+                await stream.DisposeAsync().ConfigureAwait(false);
+            }
 
-            _logger.LogInformation("Записано {Count} новых валидных записей ТЖ в локальный файл дампа: {FilePath}", writtenCount, filePath);
+            _logger.LogInformation("Записано {Count} новых валидных записей ТЖ в локальные файлы дампа (текущий слот: {FilePath})", totalWritten, filePath);
 
             CleanupOldDumps(targetDir);
         }
@@ -183,6 +249,25 @@ public sealed class FileDumper
         {
             _writeLock.Release();
         }
+    }
+
+    private long GetEffectiveMaxFileBytes()
+    {
+        if (_settings.MaxFileSizeMb > 0)
+            return (long)_settings.MaxFileSizeMb * 1024 * 1024;
+
+        if (_settings.MaxTotalSizeMb > 0)
+        {
+            var limit = _settings.RetainedFileCountLimit > 0 ? _settings.RetainedFileCountLimit : 30;
+            return Math.Max(5L * 1024 * 1024, (long)_settings.MaxTotalSizeMb * 1024 * 1024 / limit);
+        }
+
+        return 16L * 1024 * 1024; // 16 МБ безопасный размер файла по умолчанию
+    }
+
+    private int GetEffectiveMaxFileRecords()
+    {
+        return _settings.MaxFileRecordCount > 0 ? _settings.MaxFileRecordCount : 0;
     }
 
     /// <summary>
