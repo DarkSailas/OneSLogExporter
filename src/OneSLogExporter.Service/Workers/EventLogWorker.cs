@@ -280,6 +280,15 @@ public sealed class EventLogWorker(
                     {
                         await fileDumper.DumpEventLogsAsync(_options.EventLog.IndexId, newDocs, ct).ConfigureAwait(false);
                         totalSavedCount = newDocs.Count;
+
+                        try
+                        {
+                            await jsonLogTransporter.TransportEventLogsAsync(ct).ConfigureAwait(false);
+                        }
+                        catch (Exception ex)
+                        {
+                            logger.LogWarning(ex, "Предупреждение при потоковой транспортировке дампа ЖР в хранилища");
+                        }
                     }
                 }
                 else
@@ -295,6 +304,15 @@ public sealed class EventLogWorker(
                             {
                                 await fileDumper.DumpEventLogsAsync(_options.EventLog.IndexId, batch, ct).ConfigureAwait(false);
                                 totalSavedCount += batch.Count;
+
+                                try
+                                {
+                                    await jsonLogTransporter.TransportEventLogsAsync(ct).ConfigureAwait(false);
+                                }
+                                catch (Exception ex)
+                                {
+                                    logger.LogWarning(ex, "Предупреждение при потоковой транспортировке дампа ЖР в хранилища");
+                                }
                             }
                         },
                         batchSize: 5000,
@@ -321,10 +339,16 @@ public sealed class EventLogWorker(
         _isFirstScan = false;
 
         // =========================================================================
-        // ЭТАП 2: Транспортировка из локального JSON дампа в ClickHouse и Elasticsearch
-        // Все файлы 1С закрыты, сетевые задержки внешних БД не блокируют 1С!
+        // ЭТАП 2: Финальная довыгрузка оставшихся накопленных дампов ЖР в хранилища
         // =========================================================================
-        await jsonLogTransporter.TransportEventLogsAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await jsonLogTransporter.TransportEventLogsAsync(ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Предупреждение при финальной транспортировке дампа ЖР в хранилища");
+        }
 
         // Периодический возврат оперативной памяти в ОС Windows и компактизация LOH
         System.Runtime.GCSettings.LargeObjectHeapCompactionMode = System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;

@@ -161,6 +161,15 @@ public sealed class TechLogWorker(
                         {
                             await fileDumper.DumpTechLogsAsync(folderName, batch, ct).ConfigureAwait(false);
                             totalSavedCount += batch.Count;
+
+                            try
+                            {
+                                await jsonLogTransporter.TransportTechLogsAsync(ct).ConfigureAwait(false);
+                            }
+                            catch (Exception ex)
+                            {
+                                logger.LogWarning(ex, "Предупреждение при потоковой транспортировке дампа ТЖ в хранилища");
+                            }
                         }
                     },
                     batchSize: 5000,
@@ -194,10 +203,16 @@ public sealed class TechLogWorker(
         }
 
         // =========================================================================
-        // ЭТАП 2: Транспортировка из локального JSON дампа в ClickHouse и Elasticsearch
-        // Все файлы 1С закрыты, сетевые задержки внешних БД не блокируют 1С!
+        // ЭТАП 2: Финальная довыгрузка оставшихся накопленных дампов ТЖ в хранилища
         // =========================================================================
-        await jsonLogTransporter.TransportTechLogsAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await jsonLogTransporter.TransportTechLogsAsync(ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Предупреждение при финальной транспортировке дампа ТЖ в хранилища");
+        }
 
         // Периодический возврат оперативной памяти в ОС Windows и компактизация LOH
         System.Runtime.GCSettings.LargeObjectHeapCompactionMode = System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;

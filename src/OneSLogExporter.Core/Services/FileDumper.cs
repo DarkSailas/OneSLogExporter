@@ -419,6 +419,15 @@ public sealed class FileDumper
                 {
                     stream.Seek(0, SeekOrigin.End);
                 }
+                else if (mode == FileMode.Create)
+                {
+                    try
+                    {
+                        File.SetCreationTimeUtc(filePath, DateTime.UtcNow);
+                        File.SetLastWriteTimeUtc(filePath, DateTime.UtcNow);
+                    }
+                    catch { }
+                }
                 var writer = new StreamWriter(stream, Utf8WithoutBom);
                 return (stream, writer, filePath);
             }
