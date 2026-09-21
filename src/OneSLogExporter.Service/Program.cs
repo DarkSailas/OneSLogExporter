@@ -64,7 +64,9 @@ try
         { "--separation", "Exporter:Elastic:Separation" },
         { "--load-archive", "Exporter:EventLog:LoadArchive" },
         { "--database-name", "Exporter:EventLog:DatabaseName" },
-        { "--db-name", "Exporter:EventLog:DatabaseName" }
+        { "--db-name", "Exporter:EventLog:DatabaseName" },
+        { "--direct-stream-ev", "Exporter:EventLog:DirectStream" },
+        { "--direct-stream-tg", "Exporter:TechLog:DirectStream" }
     };
 
     var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings
@@ -180,6 +182,9 @@ static void LogRoutingSummary(ExporterOptions options)
     sb.AppendLine($"   - Kibana ({options.Kibana.ServerUrl}):");
     sb.AppendLine($"       -> Журнал Регистрации: {kibanaEv}");
     sb.AppendLine($"       -> Технический Журнал: {kibanaTech}");
+    sb.AppendLine("   - Режим конвейера (DirectStream):");
+    sb.AppendLine($"       -> Журнал Регистрации: {(options.EventLog.DirectStream ? "Direct-Stream (RAM -> DB, ускоренный догон)" : "TwoStage (Disk Dump -> DB)")}");
+    sb.AppendLine($"       -> Технический Журнал: {(options.TechLog.DirectStream ? "Direct-Stream (RAM -> DB, ускоренный догон)" : "TwoStage (Disk Dump -> DB)")}");
     sb.AppendLine("================================================================================");
 
     var text = sb.ToString();

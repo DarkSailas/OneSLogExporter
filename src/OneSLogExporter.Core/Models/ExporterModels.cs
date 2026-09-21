@@ -348,6 +348,12 @@ public sealed class EventLogSettings
     public string FileName { get; set; } = string.Empty;
     public bool LoadArchive { get; set; } = false; // false = только live-события с конца при первом запуске, true = читать всю историю с начала
     public string Separation { get; set; } = "Day"; // "Day" (D), "Month" (M), "Hour" (H), "None" (all)
+    /// <summary>
+    /// Режим прямой потоковой отправки батчей из оперативной памяти напрямую в целевые хранилища (ClickHouse/Elasticsearch).
+    /// При true: данные из памяти сразу вставляются в БД (до 20 000+ строк/сек), а при включенном FileDump параллельно пишется дамп без ожидания диска.
+    /// При false: двухэтапная схема (TwoStage) — сначала запись дампа на диск, затем чтение и транспортировка.
+    /// </summary>
+    public bool DirectStream { get; set; } = true;
 }
 
 /// <summary>
@@ -361,6 +367,12 @@ public sealed class TechLogSettings
     public int MaxAgeHours { get; set; } = 24;
     public bool LoadArchive { get; set; } = false; // false = только live-события с конца при первом запуске, true = читать всю историю с начала
     public string Separation { get; set; } = "Day"; // "Day" (D), "Month" (M), "Hour" (H), "None" (all)
+    /// <summary>
+    /// Режим прямой потоковой отправки батчей из оперативной памяти напрямую в целевые хранилища (ClickHouse/Elasticsearch).
+    /// При true: данные из памяти сразу вставляются в БД (до 20 000+ строк/сек), а при включенном FileDump параллельно пишется дамп без ожидания диска.
+    /// При false: двухэтапная схема (TwoStage) — сначала запись дампа на диск, затем чтение и транспортировка.
+    /// </summary>
+    public bool DirectStream { get; set; } = true;
 }
 
 /// <summary>

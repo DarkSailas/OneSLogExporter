@@ -19,6 +19,8 @@ public sealed class EventLogWorker(
     IOptions<ExporterOptions> options,
     FileDumper fileDumper,
     JsonLogTransporter jsonLogTransporter,
+    ClickHousePublisher clickHousePublisher,
+    ElasticPublisher elasticPublisher,
     StateTracker stateTracker,
     ILogger<EventLogWorker> logger) : BackgroundService
 {
@@ -48,15 +50,15 @@ public sealed class EventLogWorker(
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(_options.FileDump.EventLogDirectoryPath))
+        if ((_options.FileDump.IsEventLogActive || !_options.EventLog.DirectStream) && string.IsNullOrWhiteSpace(_options.FileDump.EventLogDirectoryPath))
         {
             logger.LogError("КРИТИЧЕСКАЯ ОШИБКА: Мониторинг Журнала Регистрации включен (EventLog.Enabled = true), но не задан обязательный каталог для выгрузки JSON-дампов (FileDump.EventLogDirectoryPath)! Экспорт ЖР остановлен.");
             return;
         }
 
         var intervalSec = Math.Max(1, _options.PollingIntervalSeconds);
-        logger.LogInformation("Запущен регулярный таймер мониторинга Журнала Регистрации 1С. Интервал опроса: {Interval} сек. Режим: Инкрементальный (только новые данные). Обязательный JSON дамп: {DumpDir}",
-            intervalSec, _options.FileDump.EventLogDirectoryPath);
+        logger.LogInformation("Запущен регулярный таймер мониторинга Журнала Регистрации 1С. Интервал опроса: {Interval} сек. Режим: {Mode}. Каталог дампа: {DumpDir}",
+            intervalSec, _options.EventLog.DirectStream ? "Direct-Stream (RAM -> DB)" : "TwoStage (Disk Dump -> DB)", _options.FileDump.EventLogDirectoryPath);
         await stateTracker.LoadAsync(stoppingToken).ConfigureAwait(false);
 
         while (!stoppingToken.IsCancellationRequested)
@@ -278,17 +280,8 @@ public sealed class EventLogWorker(
                     newPos = maxRowId;
                     if (newDocs.Count > 0)
                     {
-                        await fileDumper.DumpEventLogsAsync(_options.EventLog.IndexId, newDocs, ct).ConfigureAwait(false);
+                        await ProcessEventLogBatchAsync(newDocs, ct).ConfigureAwait(false);
                         totalSavedCount = newDocs.Count;
-
-                        try
-                        {
-                            await jsonLogTransporter.TransportEventLogsAsync(ct).ConfigureAwait(false);
-                        }
-                        catch (Exception ex)
-                        {
-                            logger.LogWarning(ex, "Предупреждение при потоковой транспортировке дампа ЖР в хранилища");
-                        }
                     }
                 }
                 else
@@ -302,28 +295,19 @@ public sealed class EventLogWorker(
                         {
                             if (batch.Count > 0)
                             {
-                                await fileDumper.DumpEventLogsAsync(_options.EventLog.IndexId, batch, ct).ConfigureAwait(false);
+                                await ProcessEventLogBatchAsync(batch, ct).ConfigureAwait(false);
                                 totalSavedCount += batch.Count;
-
-                                try
-                                {
-                                    await jsonLogTransporter.TransportEventLogsAsync(ct).ConfigureAwait(false);
-                                }
-                                catch (Exception ex)
-                                {
-                                    logger.LogWarning(ex, "Предупреждение при потоковой транспортировке дампа ЖР в хранилища");
-                                }
                             }
                         },
                         batchSize: 5000,
                         ct: ct).ConfigureAwait(false);
                 }
 
-                // Логируем результат сохранения в JSON дамп
+                // Логируем результат обработки записей
                 if (totalSavedCount > 0)
                 {
-                    logger.LogInformation("Файл ЖР {FileName}: сохранено {Count} новых записей в локальный JSON дамп [{Unit} {OldPos} -> {NewPos}].",
-                        fileName, totalSavedCount, isLgd ? "rowID" : "байт", lastPos, newPos);
+                    logger.LogInformation("Файл ЖР {FileName}: успешно обработано {Count} новых записей [{Unit} {OldPos} -> {NewPos}]. Режим: {Mode}",
+                        fileName, totalSavedCount, isLgd ? "rowID" : "байт", lastPos, newPos, _options.EventLog.DirectStream ? "Direct-Stream" : "TwoStage");
                 }
 
                 stateTracker.MarkFilePosition(targetFilePath, newPos, fileInfo.Length);
@@ -339,19 +323,67 @@ public sealed class EventLogWorker(
         _isFirstScan = false;
 
         // =========================================================================
-        // ЭТАП 2: Финальная довыгрузка оставшихся накопленных дампов ЖР в хранилища
+        // ЭТАП 2: Финальная довыгрузка оставшихся накопленных дампов ЖР в хранилища (только для режима TwoStage)
         // =========================================================================
-        try
+        if (!_options.EventLog.DirectStream)
         {
-            await jsonLogTransporter.TransportEventLogsAsync(ct).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "Предупреждение при финальной транспортировке дампа ЖР в хранилища");
+            try
+            {
+                await jsonLogTransporter.TransportEventLogsAsync(ct).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Предупреждение при финальной транспортировке дампа ЖР в хранилища");
+            }
         }
 
         // Периодический возврат оперативной памяти в ОС Windows и компактизация LOH
         System.Runtime.GCSettings.LargeObjectHeapCompactionMode = System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
         GC.Collect(2, GCCollectionMode.Optimized, blocking: false, compacting: true);
+    }
+
+    private async ValueTask ProcessEventLogBatchAsync(IReadOnlyList<EventLogDoc> batch, CancellationToken ct)
+    {
+        if (batch.Count == 0) return;
+
+        if (_options.EventLog.DirectStream)
+        {
+            // Прямая потоковая отправка пакета напрямую из памяти в ClickHouse (до 20 000+ строк/сек)
+            if (_options.ClickHouse.IsEventLogActive)
+            {
+                await clickHousePublisher.BulkInsertEventLogAsync(batch, ct).ConfigureAwait(false);
+            }
+
+            // Прямая потоковая отправка пакета напрямую из памяти в Elasticsearch / OpenSearch
+            if (_options.Elastic.IsEventLogActive)
+            {
+                var indexName = IndexNamingHelper.BuildIndexName(
+                    _options.Elastic.EventLogIndexPrefix,
+                    _options.EventLog.IndexId,
+                    _options.Elastic.Separation,
+                    batch[0].Date);
+                await elasticPublisher.BulkIndexEventLogAsync(indexName, batch, ct).ConfigureAwait(false);
+            }
+
+            // Параллельный / асинхронный сброс в локальный JSON-дамп на диске (только если FileDump включен)
+            if (_options.FileDump.IsEventLogActive)
+            {
+                await fileDumper.DumpEventLogsAsync(_options.EventLog.IndexId, batch, ct).ConfigureAwait(false);
+            }
+        }
+        else
+        {
+            // Двухэтапная классическая схема (TwoStage): сначала запись дампа на диск, затем чтение и транспортировка
+            await fileDumper.DumpEventLogsAsync(_options.EventLog.IndexId, batch, ct).ConfigureAwait(false);
+
+            try
+            {
+                await jsonLogTransporter.TransportEventLogsAsync(ct).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Предупреждение при потоковой транспортировке дампа ЖР в хранилища");
+            }
+        }
     }
 }

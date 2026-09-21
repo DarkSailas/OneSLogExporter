@@ -41,8 +41,8 @@ public sealed class FileDumper
     /// </summary>
     public async ValueTask DumpEventLogsAsync(string prefix, IEnumerable<EventLogDoc> docs, CancellationToken ct = default)
     {
-        var isActive = _settings.IsEventLogActive 
-            || (_options != null && (_options.ClickHouse.IsEventLogActive || _options.Elastic.IsEventLogActive));
+        var isTwoStageRequired = _options != null && !_options.EventLog.DirectStream && (_options.ClickHouse.IsEventLogActive || _options.Elastic.IsEventLogActive);
+        var isActive = _settings.IsEventLogActive || isTwoStageRequired;
         if (!isActive) return;
 
         var docList = docs as IReadOnlyCollection<EventLogDoc> ?? docs.ToList();
@@ -144,8 +144,8 @@ public sealed class FileDumper
     /// </summary>
     public async ValueTask DumpTechLogsAsync(string prefix, IEnumerable<TechLogDoc> docs, CancellationToken ct = default)
     {
-        var isActive = _settings.IsTechLogActive 
-            || (_options != null && (_options.ClickHouse.IsTechLogActive || _options.Elastic.IsTechLogActive));
+        var isTwoStageRequired = _options != null && !_options.TechLog.DirectStream && (_options.ClickHouse.IsTechLogActive || _options.Elastic.IsTechLogActive);
+        var isActive = _settings.IsTechLogActive || isTwoStageRequired;
         if (!isActive) return;
 
         var docList = docs as IReadOnlyCollection<TechLogDoc> ?? docs.ToList();

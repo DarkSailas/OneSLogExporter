@@ -18,6 +18,8 @@ public sealed class TechLogWorker(
     IOptions<ExporterOptions> options,
     FileDumper fileDumper,
     JsonLogTransporter jsonLogTransporter,
+    ClickHousePublisher clickHousePublisher,
+    ElasticPublisher elasticPublisher,
     StateTracker stateTracker,
     ILogger<TechLogWorker> logger) : BackgroundService
 {
@@ -45,15 +47,15 @@ public sealed class TechLogWorker(
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(_options.FileDump.TechLogDirectoryPath))
+        if ((_options.FileDump.IsTechLogActive || !_options.TechLog.DirectStream) && string.IsNullOrWhiteSpace(_options.FileDump.TechLogDirectoryPath))
         {
             logger.LogError("КРИТИЧЕСКАЯ ОШИБКА: Мониторинг Технологического Журнала включен (TechLog.Enabled = true), но не задан обязательный каталог для выгрузки JSON-дампов (FileDump.TechLogDirectoryPath)! Экспорт ТЖ остановлен.");
             return;
         }
 
         var intervalSec = Math.Max(1, _options.PollingIntervalSeconds);
-        logger.LogInformation("Запущен регулярный таймер мониторинга Технологического Журнала 1С. Интервал опроса: {Interval} сек. Режим: Инкрементальный (только новые данные). Обязательный JSON дамп: {DumpDir}",
-            intervalSec, _options.FileDump.TechLogDirectoryPath);
+        logger.LogInformation("Запущен регулярный таймер мониторинга Технологического Журнала 1С. Интервал опроса: {Interval} сек. Режим: {Mode}. Каталог дампа: {DumpDir}",
+            intervalSec, _options.TechLog.DirectStream ? "Direct-Stream (RAM -> DB)" : "TwoStage (Disk Dump -> DB)", _options.FileDump.TechLogDirectoryPath);
         await stateTracker.LoadAsync(stoppingToken).ConfigureAwait(false);
 
         while (!stoppingToken.IsCancellationRequested)
@@ -159,17 +161,8 @@ public sealed class TechLogWorker(
                     {
                         if (batch.Count > 0)
                         {
-                            await fileDumper.DumpTechLogsAsync(folderName, batch, ct).ConfigureAwait(false);
+                            await ProcessTechLogBatchAsync(folderName, batch, ct).ConfigureAwait(false);
                             totalSavedCount += batch.Count;
-
-                            try
-                            {
-                                await jsonLogTransporter.TransportTechLogsAsync(ct).ConfigureAwait(false);
-                            }
-                            catch (Exception ex)
-                            {
-                                logger.LogWarning(ex, "Предупреждение при потоковой транспортировке дампа ТЖ в хранилища");
-                            }
                         }
                     },
                     batchSize: 5000,
@@ -178,8 +171,8 @@ public sealed class TechLogWorker(
                 // Записываем новые распарсенные записи в локальный обязательный JSON дамп
                 if (totalSavedCount > 0)
                 {
-                    logger.LogInformation("Файл ТЖ {FileName} (в {FolderName}): сохранено {Count} новых записей в локальный JSON дамп [смещение {OldPos} -> {NewPos} байт].",
-                        Path.GetFileName(filePath), folderName, totalSavedCount, lastPos, newPos);
+                    logger.LogInformation("Файл ТЖ {FileName} (в {FolderName}): успешно обработано {Count} новых записей [смещение {OldPos} -> {NewPos} байт]. Режим: {Mode}",
+                        Path.GetFileName(filePath), folderName, totalSavedCount, lastPos, newPos, _options.TechLog.DirectStream ? "Direct-Stream" : "TwoStage");
                 }
 
                 stateTracker.MarkFilePosition(filePath, newPos, fileInfo.Length);
@@ -203,19 +196,67 @@ public sealed class TechLogWorker(
         }
 
         // =========================================================================
-        // ЭТАП 2: Финальная довыгрузка оставшихся накопленных дампов ТЖ в хранилища
+        // ЭТАП 2: Финальная довыгрузка оставшихся накопленных дампов ТЖ в хранилища (только для режима TwoStage)
         // =========================================================================
-        try
+        if (!_options.TechLog.DirectStream)
         {
-            await jsonLogTransporter.TransportTechLogsAsync(ct).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "Предупреждение при финальной транспортировке дампа ТЖ в хранилища");
+            try
+            {
+                await jsonLogTransporter.TransportTechLogsAsync(ct).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Предупреждение при финальной транспортировке дампа ТЖ в хранилища");
+            }
         }
 
         // Периодический возврат оперативной памяти в ОС Windows и компактизация LOH
         System.Runtime.GCSettings.LargeObjectHeapCompactionMode = System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
         GC.Collect(2, GCCollectionMode.Optimized, blocking: false, compacting: true);
+    }
+
+    private async ValueTask ProcessTechLogBatchAsync(string folderName, IReadOnlyList<TechLogDoc> batch, CancellationToken ct)
+    {
+        if (batch.Count == 0) return;
+
+        if (_options.TechLog.DirectStream)
+        {
+            // Прямая потоковая отправка пакета напрямую из памяти в ClickHouse (до 20 000+ строк/сек)
+            if (_options.ClickHouse.IsTechLogActive)
+            {
+                await clickHousePublisher.BulkInsertTechLogAsync(batch, ct).ConfigureAwait(false);
+            }
+
+            // Прямая потоковая отправка пакета напрямую из памяти в Elasticsearch / OpenSearch
+            if (_options.Elastic.IsTechLogActive)
+            {
+                var indexName = IndexNamingHelper.BuildIndexName(
+                    _options.Elastic.TechLogIndexPrefix,
+                    _options.TechLog.IndexId,
+                    _options.Elastic.Separation,
+                    batch[0].Date);
+                await elasticPublisher.BulkIndexTechLogAsync(indexName, batch, ct).ConfigureAwait(false);
+            }
+
+            // Параллельный / асинхронный сброс в локальный JSON-дамп на диске (только если FileDump включен)
+            if (_options.FileDump.IsTechLogActive)
+            {
+                await fileDumper.DumpTechLogsAsync(folderName, batch, ct).ConfigureAwait(false);
+            }
+        }
+        else
+        {
+            // Двухэтапная классическая схема (TwoStage): сначала запись дампа на диск, затем чтение и транспортировка
+            await fileDumper.DumpTechLogsAsync(folderName, batch, ct).ConfigureAwait(false);
+
+            try
+            {
+                await jsonLogTransporter.TransportTechLogsAsync(ct).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Предупреждение при потоковой транспортировке дампа ТЖ в хранилища");
+            }
+        }
     }
 }
