@@ -154,7 +154,8 @@ public sealed class TechLogParserTests
                 TechLogEnabled = true,
                 TechLogDirectoryPath = tempDir,
                 TechLogFileNamePattern = "data_tglog_{N}.json",
-                RetainedFileCountLimit = 5
+                RetainedFileCountLimit = 5,
+                MaxFileRecordCount = 1
             };
             var dumper = new FileDumper(settings, Microsoft.Extensions.Logging.Abstractions.NullLogger<FileDumper>.Instance);
 
@@ -199,7 +200,8 @@ public sealed class TechLogParserTests
                 TechLogEnabled = true,
                 TechLogDirectoryPath = tempDir,
                 TechLogFileNamePattern = "data_tglog_{N}.json",
-                RetainedFileCountLimit = 2
+                RetainedFileCountLimit = 2,
+                MaxFileRecordCount = 1
             };
             var dumper = new FileDumper(settings, Microsoft.Extensions.Logging.Abstractions.NullLogger<FileDumper>.Instance);
             var doc = TechLogParser.ParseBlock(SampleLine, 2026, 7, 30, 8, "rphost", "9000")!;

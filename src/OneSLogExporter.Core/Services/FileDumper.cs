@@ -298,7 +298,35 @@ public sealed class FileDumper
         {
             var limit = _settings.RetainedFileCountLimit > 0 ? _settings.RetainedFileCountLimit : 30;
 
-            // 1. Поиск первого свободно отсутствующего слота N от 1 до limit
+            // 1. Если не запрошена принудительная ротация в новый слот:
+            // Ищем самый свежий существующий слот. Если он еще не заполнен по лимиту размера/записей — дописываем в него (FileMode.Append)!
+            if (!forceNewSlot)
+            {
+                FileInfo? latestCandidate = null;
+                var latestTime = DateTime.MinValue;
+
+                for (var i = 1; i <= limit; i++)
+                {
+                    var fileName = basePattern.Replace("{N}", i.ToString(), StringComparison.OrdinalIgnoreCase);
+                    var filePath = Path.Combine(targetDir, fileName);
+                    if (File.Exists(filePath))
+                    {
+                        var info = new FileInfo(filePath);
+                        if (info.LastWriteTimeUtc > latestTime)
+                        {
+                            latestTime = info.LastWriteTimeUtc;
+                            latestCandidate = info;
+                        }
+                    }
+                }
+
+                if (latestCandidate != null && !ShouldRollFile(latestCandidate))
+                {
+                    return (latestCandidate.FullName, FileMode.Append);
+                }
+            }
+
+            // 2. Поиск первого свободно отсутствующего слота N от 1 до limit
             for (var i = 1; i <= limit; i++)
             {
                 var fileName = basePattern.Replace("{N}", i.ToString(), StringComparison.OrdinalIgnoreCase);
