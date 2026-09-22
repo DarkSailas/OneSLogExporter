@@ -132,7 +132,7 @@ public sealed class ClickHousePublisher : IDisposable
             var createTableSql = $"""
                 CREATE TABLE IF NOT EXISTS {db}.{table} (
                     id String,
-                    Date DateTime64(6, 'UTC'),
+                    Date DateTime('UTC'),
                     DateFormatted LowCardinality(String),
                     Duration Int64,
                     DurationMs Float64,
@@ -219,13 +219,16 @@ public sealed class ClickHousePublisher : IDisposable
             var createTableSql = $"""
                 CREATE TABLE IF NOT EXISTS {db}.{table} (
                     id String,
-                    DateTime DateTime64(3, 'UTC'),
+                    DateTime DateTime('UTC'),
                     DateFormatted LowCardinality(String),
                     Event LowCardinality(String),
                     User LowCardinality(String),
                     UserUuid LowCardinality(String),
                     Metadata LowCardinality(String),
+                    MetadataUuid LowCardinality(String),
                     Tran LowCardinality(String),
+                    TransactionDate DateTime('UTC'),
+                    TransactionNumber Int64,
                     Application LowCardinality(String),
                     Comment String,
                     Severity LowCardinality(String),
@@ -235,6 +238,7 @@ public sealed class ClickHousePublisher : IDisposable
                     Server LowCardinality(String),
                     Connection LowCardinality(String),
                     MainPort LowCardinality(String),
+                    AddPort LowCardinality(String),
                     Session LowCardinality(String),
                     TransactionStatus LowCardinality(String),
                     AppTypeName LowCardinality(String),
