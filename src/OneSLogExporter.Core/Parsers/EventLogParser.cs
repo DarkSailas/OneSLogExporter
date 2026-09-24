@@ -1293,11 +1293,6 @@ public static partial class EventLogParser
         }
         eventName ??= string.Empty;
 
-        if (filterEmptyTransactions && (eventName is "Транзакция. Начало" or "Транзакция. Фиксация" or "_$Transaction$_.Begin" or "_$Transaction$_.Commit"))
-        {
-            return null;
-        }
-
         // 9. Важность
         var importance = rawImportance switch
         {
@@ -1332,6 +1327,21 @@ public static partial class EventLogParser
             metaData = !string.IsNullOrEmpty(singleMeta) ? singleMeta : $"Meta #{metaKey}";
         }
         metaData = SanitizeText(metaData);
+
+        if (filterEmptyTransactions &&
+            (eventName is "Транзакция. Начало" or "Транзакция. Фиксация" or "_$Transaction$_.Begin" or "_$Transaction$_.Commit"))
+        {
+            var isMeaningful = !string.IsNullOrEmpty(comment) ||
+                               !string.IsNullOrEmpty(data) ||
+                               !string.IsNullOrEmpty(dataPresentation) ||
+                               !string.IsNullOrEmpty(metaData) ||
+                               (importance is not "Информация" and not "I" and not "N" and not "Примечание" and not "");
+
+            if (!isMeaningful)
+            {
+                return null;
+            }
+        }
 
         string metadataUuid = string.Empty;
         if (!string.IsNullOrEmpty(metaKey) && metaKey != "0" && metaKey != "\"\"")

@@ -851,11 +851,22 @@ I,
         var rollbackEntry = """{20260924100002,R,{1,100},1,1,1,3,I,"",0,"","",1,1,1,100}""";
         var loginEntry = """{20260924100003,N,{0,0},1,1,1,4,I,"",0,"","",1,1,1,100}""";
 
-        // When filter is enabled (true)
+        var beginWithComment = """{20260924100004,C,{1,100},1,1,1,1,I,"Non empty comment",0,"","",1,1,1,100}""";
+        var commitWithMeta = """{20260924100005,C,{1,100},1,1,1,2,I,"",1,"","",1,1,1,100}""";
+        var beginWithError = """{20260924100006,C,{1,100},1,1,1,1,E,"",0,"","",1,1,1,100}""";
+
+        dict.Metas["1"] = "Документ.ЗаказКлиента";
+
+        // When filter is enabled (true) - purely empty Begin and Commit are filtered
         EventLogParser.ParseEntry(beginEntry, dict, filterEmptyTransactions: true).Should().BeNull();
         EventLogParser.ParseEntry(commitEntry, dict, filterEmptyTransactions: true).Should().BeNull();
         EventLogParser.ParseEntry(rollbackEntry, dict, filterEmptyTransactions: true).Should().NotBeNull();
         EventLogParser.ParseEntry(loginEntry, dict, filterEmptyTransactions: true).Should().NotBeNull();
+
+        // Non-empty Begin / Commit (with comment, metadata, or error) MUST NOT be filtered
+        EventLogParser.ParseEntry(beginWithComment, dict, filterEmptyTransactions: true).Should().NotBeNull();
+        EventLogParser.ParseEntry(commitWithMeta, dict, filterEmptyTransactions: true).Should().NotBeNull();
+        EventLogParser.ParseEntry(beginWithError, dict, filterEmptyTransactions: true).Should().NotBeNull();
 
         // When filter is disabled (false)
         EventLogParser.ParseEntry(beginEntry, dict, filterEmptyTransactions: false).Should().NotBeNull();

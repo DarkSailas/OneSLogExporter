@@ -528,10 +528,6 @@ public static class LgdParser
                 ? alias
                 : rawEventName;
 
-            if (filterEmptyTransactions && (eventName is "Транзакция. Начало" or "Транзакция. Фиксация" or "_$Transaction$_.Begin" or "_$Transaction$_.Commit"))
-            {
-                continue;
-            }
 
             user = FastStringPool.Intern(EventLogParser.SanitizeText(user));
             computer = FastStringPool.Intern(EventLogParser.SanitizeText(computer));
@@ -592,6 +588,20 @@ public static class LgdParser
                     {
                         meta = metadataCodeRaw;
                     }
+                }
+            }
+
+            if (filterEmptyTransactions &&
+                (eventName is "Транзакция. Начало" or "Транзакция. Фиксация" or "_$Transaction$_.Begin" or "_$Transaction$_.Commit"))
+            {
+                var isMeaningful = !string.IsNullOrEmpty(comment) ||
+                                   !string.IsNullOrEmpty(dataPresentation) ||
+                                   !string.IsNullOrEmpty(meta) ||
+                                   (importance is not "Информация" and not "I" and not "N" and not "Примечание" and not "");
+
+                if (!isMeaningful)
+                {
+                    continue;
                 }
             }
 
