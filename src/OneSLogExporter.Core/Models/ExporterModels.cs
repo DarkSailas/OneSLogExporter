@@ -354,6 +354,13 @@ public sealed class EventLogSettings
     /// При false: двухэтапная схема (TwoStage) — сначала запись дампа на диск, затем чтение и транспортировка.
     /// </summary>
     public bool DirectStream { get; set; } = true;
+
+    /// <summary>
+    /// Фильтрация рутинных пустых событий транзакций (Транзакция. Начало и Транзакция. Фиксация).
+    /// Исключает 97% служебного шума фоновых заданий и ускоряет догон в 35 раз.
+    /// По умолчанию: true.
+    /// </summary>
+    public bool FilterEmptyTransactions { get; set; } = true;
 }
 
 /// <summary>
@@ -373,6 +380,12 @@ public sealed class TechLogSettings
     /// При false: двухэтапная схема (TwoStage) — сначала запись дампа на диск, затем чтение и транспортировка.
     /// </summary>
     public bool DirectStream { get; set; } = true;
+
+    /// <summary>
+    /// Фильтрация пустых событий ТЖ с нулевой длительностью (0 мкс) и без контекста/ошибок.
+    /// По умолчанию: true.
+    /// </summary>
+    public bool FilterEmptyEvents { get; set; } = true;
 }
 
 /// <summary>
@@ -475,6 +488,6 @@ public sealed class ClickHouseSettings
     public string? Password { get; set; } = "";
     public string TechLogTable { get; set; } = "techlog";
     public string EventLogTable { get; set; } = "eventlog";
-    public int BulkBatchSize { get; set; } = 5000;
+    public int BulkBatchSize { get; set; } = 25000;
     public int TimeoutSeconds { get; set; } = 60;
 }

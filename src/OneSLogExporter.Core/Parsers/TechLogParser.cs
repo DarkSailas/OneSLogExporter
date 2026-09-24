@@ -81,7 +81,7 @@ public static partial class TechLogParser
         string processName,
         string processId,
         long startOffset,
-        CancellationToken ct) => ParseFileFromOffsetAsync(filePath, processName, processId, startOffset, null, ct);
+        CancellationToken ct) => ParseFileFromOffsetAsync(filePath, processName, processId, startOffset, filterEmptyEvents: false, progress: null, ct: ct);
 
     /// <summary>
     /// Потоковый чанковый инкрементальный разбор файла Технологического Журнала (.log) с точным контролем памяти (Zero-Leak Chunking).
@@ -94,7 +94,8 @@ public static partial class TechLogParser
         string processId,
         long startOffset,
         Func<IReadOnlyList<TechLogDoc>, ValueTask> onBatchReady,
-        int batchSize = 5000,
+        int batchSize = 25000,
+        bool filterEmptyEvents = true,
         IProgress<(long BytesRead, long TotalBytes)>? progress = null,
         CancellationToken ct = default)
     {
@@ -152,7 +153,7 @@ public static partial class TechLogParser
             {
                 if (blockBuilder.Length > 0)
                 {
-                    var doc = ParseBlock(blockBuilder.ToString(), year, month, day, hour, processName, processId);
+                    var doc = ParseBlock(blockBuilder.ToString(), year, month, day, hour, processName, processId, filterEmptyEvents);
                     if (doc != null)
                     {
                         batch.Add(doc);
@@ -184,7 +185,7 @@ public static partial class TechLogParser
 
         if (blockBuilder.Length > 0)
         {
-            var doc = ParseBlock(blockBuilder.ToString(), year, month, day, hour, processName, processId);
+            var doc = ParseBlock(blockBuilder.ToString(), year, month, day, hour, processName, processId, filterEmptyEvents);
             if (doc != null)
             {
                 batch.Add(doc);
@@ -210,6 +211,7 @@ public static partial class TechLogParser
         string processName,
         string processId,
         long startOffset = 0,
+        bool filterEmptyEvents = false,
         IProgress<(long BytesRead, long TotalBytes)>? progress = null,
         CancellationToken ct = default)
     {
@@ -225,6 +227,7 @@ public static partial class TechLogParser
                 return ValueTask.CompletedTask;
             },
             batchSize: 50000,
+            filterEmptyEvents: filterEmptyEvents,
             progress: progress,
             ct: ct).ConfigureAwait(false);
 
@@ -437,7 +440,15 @@ public static partial class TechLogParser
     /// <summary>
     /// Разбор отдельного многострочного блока записи Технологического Журнала.
     /// </summary>
-    public static TechLogDoc? ParseBlock(string blockText, int year, int month, int day, int hour, string processName, string processId)
+    public static TechLogDoc? ParseBlock(
+        string blockText,
+        int year,
+        int month,
+        int day,
+        int hour,
+        string processName,
+        string processId,
+        bool filterEmptyEvents = false)
     {
         if (string.IsNullOrWhiteSpace(blockText))
             return null;
@@ -581,6 +592,12 @@ public static partial class TechLogParser
         sql = SanitizeMultilineText(CleanQuotes(sql));
         locks = SanitizeMultilineText(CleanQuotes(locks));
         descr = SanitizeMultilineText(CleanQuotes(descr));
+
+        if (filterEmptyEvents && duration == 0 && level == 0 &&
+            string.IsNullOrEmpty(context) && string.IsNullOrEmpty(sql) && string.IsNullOrEmpty(locks) && string.IsNullOrEmpty(descr))
+        {
+            return null;
+        }
         user = FastStringPool.Intern(SanitizeText(user));
         app = FastStringPool.Intern(SanitizeText(app));
         processName = FastStringPool.Intern(processName);

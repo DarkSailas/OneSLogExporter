@@ -391,7 +391,8 @@ public static class LgdParser
     public static async Task<(List<EventLogDoc> Docs, long NewMaxRowId)> ParseLgdIncrementalAsync(
         string lgdFilePath,
         long fromRowId,
-        int batchSize = 5000,
+        int batchSize = 25000,
+        bool filterEmptyTransactions = true,
         CancellationToken ct = default)
     {
         if (!File.Exists(lgdFilePath)) return ([], fromRowId);
@@ -526,6 +527,11 @@ public static class LgdParser
             var eventName = !string.IsNullOrEmpty(rawEventName) && EventLogParser.SystemEventAliases.TryGetValue(rawEventName, out var alias)
                 ? alias
                 : rawEventName;
+
+            if (filterEmptyTransactions && (eventName is "Транзакция. Начало" or "Транзакция. Фиксация" or "_$Transaction$_.Begin" or "_$Transaction$_.Commit"))
+            {
+                continue;
+            }
 
             user = FastStringPool.Intern(EventLogParser.SanitizeText(user));
             computer = FastStringPool.Intern(EventLogParser.SanitizeText(computer));

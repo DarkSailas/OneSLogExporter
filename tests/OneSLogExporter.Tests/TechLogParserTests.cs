@@ -318,4 +318,20 @@ public sealed class TechLogParserTests
                 Directory.Delete(tempDir, recursive: true);
         }
     }
+
+    [Fact]
+    public void ParseBlock_WithFilterEmptyEvents_ShouldFilterEmptyEvents()
+    {
+        var emptyBlock = "00:00.000000-0,VCLIENT,0,process=1cv8";
+        var meaningfulBlock = "00:00.000000-15000,DBMSSQL,0,process=1cv8,Sql='SELECT 1'";
+        var errorBlock = "00:00.000000-0,EXCP,1,process=1cv8,descr='Error occurred'";
+
+        // When filter is enabled (true)
+        TechLogParser.ParseBlock(emptyBlock, 2026, 9, 24, 10, "1cv8", "1234", filterEmptyEvents: true).Should().BeNull();
+        TechLogParser.ParseBlock(meaningfulBlock, 2026, 9, 24, 10, "1cv8", "1234", filterEmptyEvents: true).Should().NotBeNull();
+        TechLogParser.ParseBlock(errorBlock, 2026, 9, 24, 10, "1cv8", "1234", filterEmptyEvents: true).Should().NotBeNull();
+
+        // When filter is disabled (false)
+        TechLogParser.ParseBlock(emptyBlock, 2026, 9, 24, 10, "1cv8", "1234", filterEmptyEvents: false).Should().NotBeNull();
+    }
 }

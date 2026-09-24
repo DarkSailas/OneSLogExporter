@@ -284,7 +284,7 @@ public sealed class ClickHousePublisher : IDisposable
 
         await EnsureTechLogTableAsync(ct).ConfigureAwait(false);
 
-        var batchSize = _settings.BulkBatchSize > 0 ? _settings.BulkBatchSize : 5000;
+        var batchSize = _settings.BulkBatchSize > 0 ? _settings.BulkBatchSize : 25000;
         var totalSuccess = 0;
         var totalFailed = 0;
 
@@ -346,7 +346,7 @@ public sealed class ClickHousePublisher : IDisposable
 
         await EnsureEventLogTableAsync(ct).ConfigureAwait(false);
 
-        var batchSize = _settings.BulkBatchSize > 0 ? _settings.BulkBatchSize : 5000;
+        var batchSize = _settings.BulkBatchSize > 0 ? _settings.BulkBatchSize : 25000;
         var totalSuccess = 0;
         var totalFailed = 0;
 

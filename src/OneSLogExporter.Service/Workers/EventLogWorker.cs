@@ -273,10 +273,19 @@ public sealed class EventLogWorker(
                 long newPos = lastPos;
                 var totalSavedCount = 0;
 
+                var effectiveBatchSize = _options.ClickHouse.BulkBatchSize > 0
+                    ? _options.ClickHouse.BulkBatchSize
+                    : (_options.Elastic.BulkBatchSize > 0 ? _options.Elastic.BulkBatchSize : 25000);
+
                 if (isLgd)
                 {
                     logger.LogInformation("Инкрементальная обработка базы ЖР SQLite {FileName} с rowID > {LastRowId}...", fileName, lastPos);
-                    var (newDocs, maxRowId) = await LgdParser.ParseLgdIncrementalAsync(targetFilePath, lastPos, _options.Elastic.BulkBatchSize, ct).ConfigureAwait(false);
+                    var (newDocs, maxRowId) = await LgdParser.ParseLgdIncrementalAsync(
+                        targetFilePath,
+                        lastPos,
+                        effectiveBatchSize,
+                        _options.EventLog.FilterEmptyTransactions,
+                        ct).ConfigureAwait(false);
                     newPos = maxRowId;
                     if (newDocs.Count > 0)
                     {
@@ -299,7 +308,8 @@ public sealed class EventLogWorker(
                                 totalSavedCount += batch.Count;
                             }
                         },
-                        batchSize: 5000,
+                        batchSize: effectiveBatchSize,
+                        filterEmptyTransactions: _options.EventLog.FilterEmptyTransactions,
                         ct: ct).ConfigureAwait(false);
                 }
 

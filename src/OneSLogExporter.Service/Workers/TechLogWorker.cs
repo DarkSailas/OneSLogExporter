@@ -152,6 +152,10 @@ public sealed class TechLogWorker(
                 logger.LogDebug("Инкрементальный разбор файла ТЖ {FileName} (процесс {ProcessName}_{ProcessId}) со смещения {LastPos} байт (True Chunking)...", Path.GetFileName(filePath), processName, processId, lastPos);
 
                 var totalSavedCount = 0;
+                var effectiveBatchSize = _options.ClickHouse.BulkBatchSize > 0
+                    ? _options.ClickHouse.BulkBatchSize
+                    : (_options.Elastic.BulkBatchSize > 0 ? _options.Elastic.BulkBatchSize : 25000);
+
                 var newPos = await TechLogParser.ParseFileFromOffsetChunkedAsync(
                     filePath,
                     processName,
@@ -165,7 +169,8 @@ public sealed class TechLogWorker(
                             totalSavedCount += batch.Count;
                         }
                     },
-                    batchSize: 5000,
+                    batchSize: effectiveBatchSize,
+                    filterEmptyEvents: _options.TechLog.FilterEmptyEvents,
                     ct: ct).ConfigureAwait(false);
 
                 // Записываем новые распарсенные записи в локальный обязательный JSON дамп

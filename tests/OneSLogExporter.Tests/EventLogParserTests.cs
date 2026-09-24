@@ -836,6 +836,31 @@ I,
             if (File.Exists(tempFile)) File.Delete(tempFile);
         }
     }
+
+    [Fact]
+    public void ParseEntry_WithFilterEmptyTransactions_ShouldFilterBeginAndCommit()
+    {
+        var dict = new LgfDictionary();
+        dict.Events["1"] = "_$Transaction$_.Begin";
+        dict.Events["2"] = "_$Transaction$_.Commit";
+        dict.Events["3"] = "_$Transaction$_.Rollback";
+        dict.Events["4"] = "Login";
+
+        var beginEntry = """{20260924100000,C,{1,100},1,1,1,1,I,"",0,"","",1,1,1,100}""";
+        var commitEntry = """{20260924100001,C,{1,100},1,1,1,2,I,"",0,"","",1,1,1,100}""";
+        var rollbackEntry = """{20260924100002,R,{1,100},1,1,1,3,I,"",0,"","",1,1,1,100}""";
+        var loginEntry = """{20260924100003,N,{0,0},1,1,1,4,I,"",0,"","",1,1,1,100}""";
+
+        // When filter is enabled (true)
+        EventLogParser.ParseEntry(beginEntry, dict, filterEmptyTransactions: true).Should().BeNull();
+        EventLogParser.ParseEntry(commitEntry, dict, filterEmptyTransactions: true).Should().BeNull();
+        EventLogParser.ParseEntry(rollbackEntry, dict, filterEmptyTransactions: true).Should().NotBeNull();
+        EventLogParser.ParseEntry(loginEntry, dict, filterEmptyTransactions: true).Should().NotBeNull();
+
+        // When filter is disabled (false)
+        EventLogParser.ParseEntry(beginEntry, dict, filterEmptyTransactions: false).Should().NotBeNull();
+        EventLogParser.ParseEntry(commitEntry, dict, filterEmptyTransactions: false).Should().NotBeNull();
+    }
 }
 
 file sealed class SynchronousProgress<T>(Action<T> handler) : IProgress<T>

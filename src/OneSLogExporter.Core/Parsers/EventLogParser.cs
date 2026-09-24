@@ -321,7 +321,7 @@ public static partial class EventLogParser
         string filePath,
         LgfDictionary dict,
         long startOffset,
-        CancellationToken ct) => ParseLogFromOffsetAsync(filePath, dict, startOffset, null, ct);
+        CancellationToken ct) => ParseLogFromOffsetAsync(filePath, dict, startOffset, filterEmptyTransactions: false, progress: null, ct: ct);
 
     /// <summary>
     /// Потоковый чанковый инкрементальный разбор файла Журнала Регистрации (.lgp) с точным контролем памяти (Zero-Leak Chunking).
@@ -333,7 +333,8 @@ public static partial class EventLogParser
         LgfDictionary dict,
         long startOffset,
         Func<IReadOnlyList<EventLogDoc>, ValueTask> onBatchReady,
-        int batchSize = 5000,
+        int batchSize = 25000,
+        bool filterEmptyTransactions = true,
         IProgress<(long BytesRead, long TotalBytes)>? progress = null,
         CancellationToken ct = default)
     {
@@ -386,7 +387,7 @@ public static partial class EventLogParser
             {
                 if (inEntry && blockBuilder.Length > 0)
                 {
-                    var doc = ParseEntry(blockBuilder.ToString(), dict, fileName, fileSize, fileSizeFormatted);
+                    var doc = ParseEntry(blockBuilder.ToString(), dict, fileName, fileSize, fileSizeFormatted, filterEmptyTransactions);
                     if (doc != null)
                     {
                         batch.Add(doc);
@@ -407,7 +408,7 @@ public static partial class EventLogParser
 
                 if (braceBalance <= 0)
                 {
-                    var doc = ParseEntry(blockBuilder.ToString(), dict, fileName, fileSize, fileSizeFormatted);
+                    var doc = ParseEntry(blockBuilder.ToString(), dict, fileName, fileSize, fileSizeFormatted, filterEmptyTransactions);
                     if (doc != null)
                     {
                         batch.Add(doc);
@@ -432,7 +433,7 @@ public static partial class EventLogParser
 
                 if (braceBalance <= 0)
                 {
-                    var doc = ParseEntry(blockBuilder.ToString(), dict, fileName, fileSize, fileSizeFormatted);
+                    var doc = ParseEntry(blockBuilder.ToString(), dict, fileName, fileSize, fileSizeFormatted, filterEmptyTransactions);
                     if (doc != null)
                     {
                         batch.Add(doc);
@@ -462,7 +463,7 @@ public static partial class EventLogParser
 
         if (inEntry && blockBuilder.Length > 0)
         {
-            var doc = ParseEntry(blockBuilder.ToString(), dict, fileName, fileSize, fileSizeFormatted);
+            var doc = ParseEntry(blockBuilder.ToString(), dict, fileName, fileSize, fileSizeFormatted, filterEmptyTransactions);
             if (doc != null)
             {
                 batch.Add(doc);
@@ -487,6 +488,7 @@ public static partial class EventLogParser
         string filePath,
         LgfDictionary dict,
         long startOffset = 0,
+        bool filterEmptyTransactions = false,
         IProgress<(long BytesRead, long TotalBytes)>? progress = null,
         CancellationToken ct = default)
     {
@@ -501,6 +503,7 @@ public static partial class EventLogParser
                 return ValueTask.CompletedTask;
             },
             batchSize: 50000,
+            filterEmptyTransactions: filterEmptyTransactions,
             progress: progress,
             ct: ct).ConfigureAwait(false);
 
@@ -1080,7 +1083,8 @@ public static partial class EventLogParser
         LgfDictionary dict,
         string? fileName = null,
         long fileSize = 0,
-        string? fileSizeFormatted = null)
+        string? fileSizeFormatted = null,
+        bool filterEmptyTransactions = false)
     {
         if (string.IsNullOrWhiteSpace(rawBlock))
             return null;
@@ -1286,6 +1290,12 @@ public static partial class EventLogParser
         else if (string.IsNullOrEmpty(eventName) && !string.IsNullOrEmpty(eventKey) && eventKey != "0")
         {
             eventName = $"Event #{eventKey}";
+        }
+        eventName ??= string.Empty;
+
+        if (filterEmptyTransactions && (eventName is "Транзакция. Начало" or "Транзакция. Фиксация" or "_$Transaction$_.Begin" or "_$Transaction$_.Commit"))
+        {
+            return null;
         }
 
         // 9. Важность
