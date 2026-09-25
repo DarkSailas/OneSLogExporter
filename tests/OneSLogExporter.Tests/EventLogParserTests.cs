@@ -857,9 +857,14 @@ I,
 
         dict.Metas["1"] = "Документ.ЗаказКлиента";
 
-        // When filter is enabled (true) - purely empty Begin and Commit are filtered
+        var real1CBeginEntry = """{20260810000134,C,{2455dcf7f8fe0,6f33c},1,1,1,39470,1,I,"",0,{"U"},"",1,1,1,44055}""";
+        var real1CCommitEntry = """{20260810000134,C,{2455dcf7f8fe0,6f33c},1,1,2,39470,2,I,"",0,{"U"},"",1,1,1,44055}""";
+
+        // When filter is enabled (true) - purely empty Begin and Commit are filtered (including real 1C {"U"} empty data)
         EventLogParser.ParseEntry(beginEntry, dict, filterEmptyTransactions: true).Should().BeNull();
         EventLogParser.ParseEntry(commitEntry, dict, filterEmptyTransactions: true).Should().BeNull();
+        EventLogParser.ParseEntry(real1CBeginEntry, dict, filterEmptyTransactions: true).Should().BeNull();
+        EventLogParser.ParseEntry(real1CCommitEntry, dict, filterEmptyTransactions: true).Should().BeNull();
         EventLogParser.ParseEntry(rollbackEntry, dict, filterEmptyTransactions: true).Should().NotBeNull();
         EventLogParser.ParseEntry(loginEntry, dict, filterEmptyTransactions: true).Should().NotBeNull();
 
@@ -871,6 +876,8 @@ I,
         // When filter is disabled (false)
         EventLogParser.ParseEntry(beginEntry, dict, filterEmptyTransactions: false).Should().NotBeNull();
         EventLogParser.ParseEntry(commitEntry, dict, filterEmptyTransactions: false).Should().NotBeNull();
+        EventLogParser.ParseEntry(real1CBeginEntry, dict, filterEmptyTransactions: false).Should().NotBeNull();
+        EventLogParser.ParseEntry(real1CCommitEntry, dict, filterEmptyTransactions: false).Should().NotBeNull();
     }
 }
 

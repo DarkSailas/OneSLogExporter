@@ -1328,21 +1328,6 @@ public static partial class EventLogParser
         }
         metaData = SanitizeText(metaData);
 
-        if (filterEmptyTransactions &&
-            (eventName is "Транзакция. Начало" or "Транзакция. Фиксация" or "_$Transaction$_.Begin" or "_$Transaction$_.Commit"))
-        {
-            var isMeaningful = !string.IsNullOrEmpty(comment) ||
-                               !string.IsNullOrEmpty(data) ||
-                               !string.IsNullOrEmpty(dataPresentation) ||
-                               !string.IsNullOrEmpty(metaData) ||
-                               (importance is not "Информация" and not "I" and not "N" and not "Примечание" and not "");
-
-            if (!isMeaningful)
-            {
-                return null;
-            }
-        }
-
         string metadataUuid = string.Empty;
         if (!string.IsNullOrEmpty(metaKey) && metaKey != "0" && metaKey != "\"\"")
         {
@@ -1380,6 +1365,23 @@ public static partial class EventLogParser
         else if (data == "(без объектной ссылки)" && string.IsNullOrEmpty(dataPresentation))
         {
             dataPresentation = $"Запись регистра: {metaData}";
+        }
+
+        // Фильтрация пустых системных транзакций (только после декодирования Data и DataPresentation, 
+        // чтобы 1С маркеры отсутствия данных вроде {"U"} не считались полезной нагрузкой)
+        if (filterEmptyTransactions &&
+            (eventName is "Транзакция. Начало" or "Транзакция. Фиксация" or "_$Transaction$_.Begin" or "_$Transaction$_.Commit"))
+        {
+            var isMeaningful = !string.IsNullOrEmpty(comment) ||
+                               !string.IsNullOrEmpty(data) ||
+                               !string.IsNullOrEmpty(dataPresentation) ||
+                               !string.IsNullOrEmpty(metaData) ||
+                               (importance is not "Информация" and not "I" and not "N" and not "Примечание" and not "");
+
+            if (!isMeaningful)
+            {
+                return null;
+            }
         }
 
         // 16. Сеанс (SessionID)
