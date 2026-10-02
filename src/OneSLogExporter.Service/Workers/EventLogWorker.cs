@@ -1,0 +1,503 @@
+using System.Collections.Concurrent;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using OneSLogExporter.Core.Models;
+using OneSLogExporter.Core.Parsers;
+using OneSLogExporter.Core.Services;
+using OneSLogExporter.Core.State;
+
+namespace OneSLogExporter.Service.Workers;
+
+/// <summary>
+/// Фоновый воркер регулярного мониторинга и инкрементального экспорта Журнала Регистрации 1С по таймеру.
+/// Реализует двухэтапный конвейер (Stage 1 -> Stage 2):
+/// 1) Быстрый сбор и локальный сброс в NDJSON (с мгновенным освобождением файлов 1С от блокировок).
+/// 2) Транспортировка накопленных JSON-данных в ClickHouse / Elasticsearch через JsonLogTransporter.
+/// </summary>
+public sealed class EventLogWorker(
+    IOptions<ExporterOptions> options,
+    FileDumper fileDumper,
+    JsonLogTransporter jsonLogTransporter,
+    ClickHousePublisher clickHousePublisher,
+    ElasticPublisher elasticPublisher,
+    StateTracker stateTracker,
+    ILogger<EventLogWorker> logger) : BackgroundService
+{
+    private readonly ExporterOptions _options = options.Value;
+    private readonly ConcurrentDictionary<string, (DateTime LastWriteTime, LgfDictionary Dictionary)> _dictCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _discoveredLogged = new(StringComparer.OrdinalIgnoreCase);
+    private bool _isFirstScan = true;
+    private DuplicateGate _dedup = DuplicateGate.Disabled;
+    private readonly Dictionary<string, DateTime> _lgdWalWriteTimes = new(StringComparer.OrdinalIgnoreCase);
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        // Немедленно отдаем управление SCM хосту Windows, чтобы служба мгновенно рапортовала статус SERVICE_RUNNING
+        await Task.Yield();
+
+        if (!_options.EventLog.Enabled || string.IsNullOrWhiteSpace(_options.EventLog.DirectoryPath))
+        {
+            logger.LogInformation("Мониторинг Журнала Регистрации отключен (EventLog.Enabled = false или не указан DirectoryPath).");
+            return;
+        }
+
+        var hasAnyEventLogConsumer = _options.FileDump.IsEventLogActive
+            || _options.ClickHouse.IsEventLogActive
+            || _options.Elastic.IsEventLogActive;
+
+        if (!hasAnyEventLogConsumer)
+        {
+            logger.LogInformation("Журнал Регистрации: сбор включен (EventLog.Enabled=true), но ни один сервис не подписан на ЖР (EventLogEnabled=false). Сканирование каталога ЖР пропущено.");
+            return;
+        }
+
+        if ((_options.FileDump.IsEventLogActive || !_options.EventLog.DirectStream) && string.IsNullOrWhiteSpace(_options.FileDump.EventLogDirectoryPath))
+        {
+            logger.LogError("КРИТИЧЕСКАЯ ОШИБКА: Мониторинг Журнала Регистрации включен (EventLog.Enabled = true), но не задан обязательный каталог для выгрузки JSON-дампов (FileDump.EventLogDirectoryPath)! Экспорт ЖР остановлен.");
+            return;
+        }
+
+        var intervalSec = Math.Max(1, _options.PollingIntervalSeconds);
+        logger.LogInformation("Запущен регулярный таймер мониторинга Журнала Регистрации 1С. Интервал опроса: {Interval} сек. Режим: {Mode}. Каталог дампа: {DumpDir}",
+            intervalSec, _options.EventLog.DirectStream ? "Direct-Stream (RAM -> DB)" : "TwoStage (Disk Dump -> DB)", _options.FileDump.EventLogDirectoryPath);
+        await stateTracker.LoadAsync(stoppingToken).ConfigureAwait(false);
+
+        _dedup = DuplicateGate.Create(
+            _options.EventLog.DeduplicateById,
+            Path.Combine(Path.GetDirectoryName(stateTracker.StateFilePath) ?? AppContext.BaseDirectory, "dedup_eventlog.bin"),
+            _options.EventLog.DeduplicationCapacity,
+            logger);
+        if (_dedup.Enabled)
+        {
+            await _dedup.LoadAsync(stoppingToken).ConfigureAwait(false);
+            logger.LogInformation("Журнал Регистрации: включён пропуск повторных событий по id (ёмкость фильтра {Capacity}).",
+                _options.EventLog.DeduplicationCapacity);
+        }
+
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                await ProcessEventLogsAsync(stoppingToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Ошибка в цикле обработки Журнала Регистрации 1С");
+            }
+            finally
+            {
+                // Фильтр сохраняется и после ошибки/остановки: id отправленных пачек уже зафиксированы в нём.
+                await SaveDedupAsync().ConfigureAwait(false);
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(intervalSec), stoppingToken).ConfigureAwait(false);
+        }
+    }
+
+    private async ValueTask SaveDedupAsync()
+    {
+        if (!_dedup.Enabled) return;
+
+        var skipped = _dedup.TakeSkippedCount();
+        if (skipped > 0)
+        {
+            logger.LogInformation("Журнал Регистрации: пропущено {Count} повторных событий (DeduplicateById).", skipped);
+        }
+
+        try
+        {
+            // Без токена: файл маленький, а при остановке службы его как раз важно дописать.
+            await _dedup.SaveAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            logger.LogWarning(ex, "Не удалось сохранить фильтр дублей ЖР");
+        }
+    }
+
+    /// <summary>Размер .lgd вместе с WAL-файлом SQLite: новые записи могут ещё не попасть в основной файл.</summary>
+    private static long GetLgdTrackedSize(FileInfo lgdFile)
+    {
+        var wal = new FileInfo(lgdFile.FullName + "-wal");
+        return lgdFile.Length + (wal.Exists ? wal.Length : 0);
+    }
+
+    private async ValueTask<LgfDictionary> GetOrCreateDictionaryAsync(string? dictPath, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(dictPath) || !File.Exists(dictPath))
+        {
+            logger.LogWarning("Файл словаря 1Cv8.lgf не найден по пути: {DictPath}. Имена пользователей, событий и приложений могут остаться нераспознанными.", dictPath ?? "<не указан>");
+            return new LgfDictionary();
+        }
+
+        try
+        {
+            var lastWrite = File.GetLastWriteTimeUtc(dictPath);
+            if (_dictCache.TryGetValue(dictPath, out var cached) && cached.LastWriteTime == lastWrite)
+            {
+                return cached.Dictionary;
+            }
+
+            logger.LogInformation("Парсинг словаря 1Cv8.lgf [{DictPath}]...", dictPath);
+            var parsed = await EventLogParser.ParseDictionaryAsync(dictPath, ct).ConfigureAwait(false);
+            _dictCache[dictPath] = (lastWrite, parsed);
+            return parsed;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Ошибка при чтении словаря 1Cv8.lgf из {DictPath}. Используется пустой словарь.", dictPath);
+            return new LgfDictionary();
+        }
+    }
+
+    /// <summary>
+    /// Функция сканирования файлов Журнала Регистрации: этап 1 (1С -> JSON) и этап 2 (JSON -> Хранилища).
+    /// </summary>
+    private async ValueTask ProcessEventLogsAsync(CancellationToken ct)
+    {
+        var rootDir = _options.EventLog.DirectoryPath;
+        if (string.IsNullOrWhiteSpace(rootDir))
+            return;
+
+        if (!Directory.Exists(rootDir) && !File.Exists(rootDir))
+        {
+            logger.LogWarning("Каталог/файл Журнала Регистрации не найден: {RootDir}", rootDir);
+            return;
+        }
+
+        List<(string TargetDir, string? DictionaryPath)> targetScopes = [];
+
+        if (!string.IsNullOrWhiteSpace(_options.EventLog.DatabaseName))
+        {
+            var matchedBases = LogDiscovery.ResolveInfobases(rootDir, _options.EventLog.DatabaseName);
+            if (matchedBases.Count > 0)
+            {
+                foreach (var b in matchedBases)
+                {
+                    if (_discoveredLogged.Add(b.Guid))
+                    {
+                        logger.LogInformation("Обнаружена целевая база 1С '{Name}' [GUID: {Guid}] в {Path}. Словарь: {DictPath}",
+                            b.Name, b.Guid, b.DirectoryPath, b.DictionaryPath ?? "не найден");
+                    }
+                    targetScopes.Add((b.DirectoryPath, b.DictionaryPath));
+                }
+            }
+            else
+            {
+                var all = LogDiscovery.DiscoverInfobases(rootDir);
+                if (all.Count > 0)
+                {
+                    var available = string.Join(", ", all.Select(a => $"'{a.Name}' ({a.Guid})"));
+                    logger.LogWarning("База '{TargetName}' не найдена в реестре кластера 1С ({RootDir}). Доступные базы: {Available}",
+                        _options.EventLog.DatabaseName, rootDir, available);
+                    return;
+                }
+                else
+                {
+                    logger.LogWarning("База '{TargetName}' задана, но реестр кластера (1CV8Clst.lst) не обнаружен в {RootDir}. Выполняется прямое сканирование пути.",
+                        _options.EventLog.DatabaseName, rootDir);
+                    targetScopes.Add((rootDir, LogDiscovery.FindEventLogDictionary(rootDir)));
+                }
+            }
+        }
+        else
+        {
+            var allBases = LogDiscovery.DiscoverInfobases(rootDir);
+            if (allBases.Count > 0)
+            {
+                foreach (var b in allBases)
+                {
+                    if (_discoveredLogged.Add(b.Guid))
+                    {
+                        logger.LogInformation("Обнаружена база 1С в кластере '{Name}' [GUID: {Guid}] в {Path}. Словарь: {DictPath}",
+                            b.Name, b.Guid, b.DirectoryPath, b.DictionaryPath ?? "не найден");
+                    }
+                    targetScopes.Add((b.DirectoryPath, b.DictionaryPath));
+                }
+            }
+            else
+            {
+                targetScopes.Add((rootDir, LogDiscovery.FindEventLogDictionary(rootDir)));
+            }
+        }
+
+        var fileNameFilter = _options.EventLog.FileName;
+
+        // =========================================================================
+        // ЭТАП 1: Сбор и парсинг 1С в локальный JSON с мгновенным закрытием файлов 1С
+        // =========================================================================
+        foreach (var (scopeDir, dictPath) in targetScopes)
+        {
+            if (ct.IsCancellationRequested) break;
+
+            var dictionary = await GetOrCreateDictionaryAsync(dictPath ?? LogDiscovery.FindEventLogDictionary(scopeDir), ct).ConfigureAwait(false);
+
+            var lgpFiles = LogDiscovery.FindEventLogFiles(scopeDir, fileNameFilter).ToList();
+            if (lgpFiles.Count == 0 && File.Exists(scopeDir))
+            {
+                lgpFiles.Add(scopeDir);
+            }
+
+            if (lgpFiles.Count == 0)
+            {
+                logger.LogDebug("Файлы событий Журнала Регистрации (*.lgp, *.lgd) не найдены в {ScopeDir}", scopeDir);
+                continue;
+            }
+
+            foreach (var targetFilePath in lgpFiles)
+            {
+                if (ct.IsCancellationRequested) break;
+
+            try
+            {
+                var fileInfo = new FileInfo(targetFilePath);
+                if (!fileInfo.Exists)
+                {
+                    logger.LogDebug("Файл ЖР {FilePath} не существует, пропускаем.", targetFilePath);
+                    continue;
+                }
+
+                var isLgd = targetFilePath.EndsWith(".lgd", StringComparison.OrdinalIgnoreCase);
+                var fileName = Path.GetFileName(targetFilePath);
+                // Для .lgd новые записи могут лежать только в WAL-файле, поэтому его размер тоже учитываем.
+                var trackedSize = isLgd ? GetLgdTrackedSize(fileInfo) : fileInfo.Length;
+                var walWriteTime = isLgd ? File.GetLastWriteTimeUtc(targetFilePath + "-wal") : default;
+
+                // Для .lgp файлов определяем словарь строго в каталоге конкретного файла:
+                LgfDictionary? fileDictionary = null;
+                if (!isLgd)
+                {
+                    var targetDir = Path.GetDirectoryName(targetFilePath);
+                    var companionDict = !string.IsNullOrEmpty(targetDir) ? Path.Combine(targetDir, "1Cv8.lgf") : null;
+                    var effectiveDictPath = (companionDict != null && File.Exists(companionDict))
+                        ? companionDict
+                        : (dictPath ?? LogDiscovery.FindEventLogDictionary(targetDir ?? scopeDir));
+
+                    fileDictionary = await GetOrCreateDictionaryAsync(effectiveDictPath, ct).ConfigureAwait(false);
+                }
+
+                // Если файл еще не отслеживался и LoadArchive = false -> отсечка на конец файла (только новые live-события)
+                if (!stateTracker.HasTrackedState(targetFilePath) && !_options.EventLog.LoadArchive)
+                {
+                    if (isLgd)
+                    {
+                        if (_isFirstScan)
+                        {
+                            var maxRowId = await LgdParser.GetMaxRowIdAsync(targetFilePath, ct).ConfigureAwait(false);
+                            stateTracker.MarkFilePosition(targetFilePath, maxRowId, trackedSize);
+                            await stateTracker.SaveAsync(ct).ConfigureAwait(false);
+                            logger.LogInformation("База ЖР {FileName}: первичный запуск (LoadArchive=false). Установлена отсечка на текущий rowID {MaxRowId} (выгружаются только новые live-события).", fileName, maxRowId);
+                            continue;
+                        }
+                        else
+                        {
+                            stateTracker.MarkFilePosition(targetFilePath, 0, 0);
+                        }
+                    }
+                    else
+                    {
+                        if (_isFirstScan)
+                        {
+                            stateTracker.MarkFilePosition(targetFilePath, fileInfo.Length, fileInfo.Length);
+                            await stateTracker.SaveAsync(ct).ConfigureAwait(false);
+                            logger.LogInformation("Файл ЖР {FileName}: первичный запуск (LoadArchive=false). Установлена отсечка на конец файла {Length} байт (выгружаются только новые live-события).", fileName, fileInfo.Length);
+                            continue;
+                        }
+                        else
+                        {
+                            // Файл появился уже во время работы службы (ротация периода 1С) -> читаем новый файл с 0 байт
+                            logger.LogInformation("Файл ЖР {FileName}: обнаружен новый ротированный файл ЖР. Чтение с 0 байт.", fileName);
+                            stateTracker.MarkFilePosition(targetFilePath, 0, fileInfo.Length);
+                        }
+                    }
+                }
+
+                // После checkpoint SQLite пишет WAL с начала, и суммарный размер может не измениться — смотрим и время записи WAL.
+                var walChanged = isLgd
+                    && (!_lgdWalWriteTimes.TryGetValue(targetFilePath, out var seenWal) || seenWal != walWriteTime);
+                if (!stateTracker.HasFileGrown(targetFilePath, trackedSize) && !walChanged)
+                {
+                    logger.LogDebug("Файл ЖР {FileName} без изменений, пропускаем.", fileName);
+                    continue;
+                }
+
+                var lastPos = stateTracker.GetLastPosition(targetFilePath);
+                if (!isLgd && lastPos > fileInfo.Length)
+                {
+                    // Файл стал короче сохранённой позиции — 1С пересоздала его (например, при сокращении журнала).
+                    logger.LogInformation("Файл ЖР {FileName} уменьшился ({Length} < {LastPos} байт), чтение с начала.",
+                        fileName, fileInfo.Length, lastPos);
+                    lastPos = 0;
+                }
+
+                long newPos = lastPos;
+                var totalSavedCount = 0;
+
+                var effectiveBatchSize = _options.ClickHouse.BulkBatchSize > 0
+                    ? _options.ClickHouse.BulkBatchSize
+                    : (_options.Elastic.BulkBatchSize > 0 ? _options.Elastic.BulkBatchSize : 25000);
+
+                _dedup.ResetPending();
+                if (isLgd)
+                {
+                    logger.LogInformation("Инкрементальная обработка базы ЖР SQLite {FileName} с rowID > {LastRowId}...", fileName, lastPos);
+
+                    // Читаем пачками до конца: раньше за один опрос читалась одна пачка, и при неизменном размере
+                    // файла остаток не дочитывался до следующей записи 1С.
+                    while (true)
+                    {
+                        ct.ThrowIfCancellationRequested();
+
+                        var (newDocs, maxRowId) = await LgdParser.ParseLgdIncrementalAsync(
+                            targetFilePath,
+                            newPos,
+                            effectiveBatchSize,
+                            _options.EventLog.FilterEmptyTransactions,
+                            ct).ConfigureAwait(false);
+                        if (maxRowId <= newPos)
+                            break;
+
+                        var fresh = _dedup.Enabled
+                            ? newDocs.Where(d => !_dedup.IsDuplicate(d.Id)).ToList()
+                            : newDocs;
+                        if (fresh.Count > 0)
+                        {
+                            await ProcessEventLogBatchAsync(fresh, ct).ConfigureAwait(false);
+                            totalSavedCount += fresh.Count;
+                            _dedup.Commit(fresh.Select(d => d.Id));
+                        }
+
+                        newPos = maxRowId;
+                        // Размер 0 до конца догона: если служба упадёт посередине, следующий опрос не сочтёт файл неизменным.
+                        stateTracker.MarkFilePosition(targetFilePath, newPos, 0);
+                        await stateTracker.SaveAsync(CancellationToken.None).ConfigureAwait(false);
+                    }
+                }
+                else
+                {
+                    logger.LogInformation("Инкрементальная обработка файла Журнала Регистрации {FileName} со смещения {LastPos} байт (True Chunking)...", fileName, lastPos);
+                    newPos = await EventLogParser.ParseLogFromOffsetChunkedAsync(
+                        targetFilePath,
+                        fileDictionary ?? dictionary,
+                        lastPos,
+                        async (batch, resumeOffset) =>
+                        {
+                            if (batch.Count > 0)
+                            {
+                                await ProcessEventLogBatchAsync(batch, ct).ConfigureAwait(false);
+                                totalSavedCount += batch.Count;
+                                _dedup.Commit(batch.Select(d => d.Id));
+                            }
+
+                            // Позиция фиксируется после каждой отправленной пачки (без токена: пачка уже отправлена).
+                            stateTracker.MarkFilePosition(targetFilePath, resumeOffset, fileInfo.Length);
+                            await stateTracker.SaveAsync(CancellationToken.None).ConfigureAwait(false);
+                        },
+                        batchSize: effectiveBatchSize,
+                        filterEmptyTransactions: _options.EventLog.FilterEmptyTransactions,
+                        isKnownId: _dedup.Predicate,
+                        ct: ct).ConfigureAwait(false);
+                }
+
+                // Логируем результат обработки записей
+                if (totalSavedCount > 0)
+                {
+                    logger.LogInformation("Файл ЖР {FileName}: успешно обработано {Count} новых записей [{Unit} {OldPos} -> {NewPos}]. Режим: {Mode}",
+                        fileName, totalSavedCount, isLgd ? "rowID" : "байт", lastPos, newPos, _options.EventLog.DirectStream ? "Direct-Stream" : "TwoStage");
+                }
+
+                stateTracker.MarkFilePosition(targetFilePath, newPos, trackedSize);
+                await stateTracker.SaveAsync(CancellationToken.None).ConfigureAwait(false);
+                if (isLgd)
+                    _lgdWalWriteTimes[targetFilePath] = walWriteTime;
+            }
+            catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException or IOException or UnauthorizedAccessException)
+            {
+                logger.LogWarning("Файл ЖР {FilePath} недоступен или временно заблокирован: {Message}", targetFilePath, ex.Message);
+            }
+        }
+        }
+
+        _isFirstScan = false;
+
+        // =========================================================================
+        // ЭТАП 2: Финальная довыгрузка оставшихся накопленных дампов ЖР в хранилища (только для режима TwoStage)
+        // =========================================================================
+        if (!_options.EventLog.DirectStream)
+        {
+            try
+            {
+                await jsonLogTransporter.TransportEventLogsAsync(ct).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Предупреждение при финальной транспортировке дампа ЖР в хранилища");
+            }
+        }
+
+        // Периодический возврат оперативной памяти в ОС Windows и компактизация LOH
+        System.Runtime.GCSettings.LargeObjectHeapCompactionMode = System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
+        GC.Collect(2, GCCollectionMode.Optimized, blocking: false, compacting: true);
+    }
+
+    private async ValueTask ProcessEventLogBatchAsync(IReadOnlyList<EventLogDoc> batch, CancellationToken ct)
+    {
+        if (batch.Count == 0) return;
+
+        if (_options.EventLog.CollapseRepeats)
+        {
+            var sourceCount = batch.Count;
+            batch = EventLogCollapser.Collapse(batch, TimeSpan.FromSeconds(Math.Max(1, _options.EventLog.CollapseWindowSeconds)));
+            if (batch.Count < sourceCount)
+            {
+                logger.LogDebug("Журнал Регистрации: {Source} событий схлопнуто в {Result} записей (CollapseRepeats).", sourceCount, batch.Count);
+            }
+        }
+
+        if (_options.EventLog.DirectStream)
+        {
+            // Прямая потоковая отправка пакета напрямую из памяти в ClickHouse (до 20 000+ строк/сек)
+            if (_options.ClickHouse.IsEventLogActive)
+            {
+                await clickHousePublisher.BulkInsertEventLogAsync(batch, ct).ConfigureAwait(false);
+            }
+
+            // Прямая потоковая отправка пакета напрямую из памяти в Elasticsearch / OpenSearch
+            if (_options.Elastic.IsEventLogActive)
+            {
+                var indexName = IndexNamingHelper.BuildIndexName(
+                    _options.Elastic.EventLogIndexPrefix,
+                    _options.EventLog.IndexId,
+                    _options.Elastic.Separation,
+                    batch[0].Date);
+                ElasticPublisher.ThrowIfFailed(
+                    await elasticPublisher.BulkIndexEventLogAsync(indexName, batch, ct).ConfigureAwait(false), indexName);
+            }
+
+            // Параллельный / асинхронный сброс в локальный JSON-дамп на диске (только если FileDump включен)
+            if (_options.FileDump.IsEventLogActive)
+            {
+                await fileDumper.DumpEventLogsAsync(_options.EventLog.IndexId, batch, ct).ConfigureAwait(false);
+            }
+        }
+        else
+        {
+            // Двухэтапная классическая схема (TwoStage): сначала запись дампа на диск, затем чтение и транспортировка
+            await fileDumper.DumpEventLogsAsync(_options.EventLog.IndexId, batch, ct).ConfigureAwait(false);
+
+            try
+            {
+                await jsonLogTransporter.TransportEventLogsAsync(ct).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Предупреждение при потоковой транспортировке дампа ЖР в хранилища");
+            }
+        }
+    }
+}

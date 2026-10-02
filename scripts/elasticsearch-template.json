@@ -1,0 +1,104 @@
+﻿{
+  "index_patterns": ["events_*", "techlog_*"],
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 0,
+      "refresh_interval": "5s"
+    },
+    "mappings": {
+      "properties": {
+        "@timestamp": { "type": "date" },
+        "Timestamp": { "type": "date" },
+        "Date": { "type": "date" },
+        "DateFormatted": { "type": "keyword" },
+        "Id": { "type": "keyword" },
+        "Event": { "type": "keyword" },
+        "EventPresentation": { "type": "keyword" },
+        "Level": { "type": "keyword" },
+        "LevelRu": { "type": "keyword" },
+        "Importance": { "type": "keyword" },
+        "User": { "type": "keyword" },
+        "Computer": { "type": "keyword" },
+        "App": { "type": "keyword" },
+        "AppTypeName": { "type": "keyword" },
+        "Server": { "type": "keyword" },
+        "ServerName": { "type": "keyword" },
+        "Port": { "type": "keyword" },
+        "Session": { "type": "keyword" },
+        "SessionId": { "type": "keyword" },
+        "Connection": { "type": "keyword" },
+        "ConnectId": { "type": "keyword" },
+        "ClientId": { "type": "keyword" },
+        "Spid": { "type": "keyword" },
+        "OSThread": { "type": "keyword" },
+        "ProcessName": { "type": "keyword" },
+        "ProcessId": { "type": "keyword" },
+        "Meta": { "type": "keyword" },
+        "Metadata": { "type": "keyword" },
+        "Tran": { "type": "keyword" },
+        "TransactionId": { "type": "keyword" },
+        "TransactionStatus": { "type": "keyword" },
+        "TranStatusText": { "type": "keyword" },
+        "DurationMs": { "type": "double" },
+        "DurationSec": { "type": "double" },
+        "DurationFormatted": { "type": "keyword" },
+        "LongInfoName": { "type": "keyword" },
+        "LongInfoWait": { "type": "long" },
+        "Rows": { "type": "long" },
+        "InBytes": { "type": "long" },
+        "OutBytes": { "type": "long" },
+        "Method": { "type": "keyword" },
+        "Url": { "type": "keyword" },
+        "Comment": {
+          "type": "text",
+          "fields": {
+            "keyword": { "type": "keyword", "ignore_above": 1024 }
+          }
+        },
+        "Context": {
+          "type": "text",
+          "fields": {
+            "keyword": { "type": "keyword", "ignore_above": 2048 }
+          }
+        },
+        "Sql": {
+          "type": "text",
+          "fields": {
+            "keyword": { "type": "keyword", "ignore_above": 2048 }
+          }
+        },
+        "Descr": {
+          "type": "text",
+          "fields": {
+            "keyword": { "type": "keyword", "ignore_above": 2048 }
+          }
+        },
+        "Locks": {
+          "type": "text",
+          "fields": {
+            "keyword": { "type": "keyword", "ignore_above": 2048 }
+          }
+        },
+        "WaitConnections": {
+          "type": "keyword"
+        },
+        "Data": {
+          "type": "text",
+          "fields": {
+            "keyword": { "type": "keyword", "ignore_above": 1024 }
+          }
+        },
+        "DataPresentation": {
+          "type": "text",
+          "fields": {
+            "keyword": { "type": "keyword", "ignore_above": 1024 }
+          }
+        },
+        "FileName": { "type": "keyword" },
+        "FileSize": { "type": "long" },
+        "FileSizeFormatted": { "type": "keyword" }
+      }
+    }
+  }
+}
