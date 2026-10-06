@@ -1,0 +1,54 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<config xmlns="http://v8.1c.ru/v8/tech-log">
+  <dump create="false"/>
+
+  <!-- Общие события системы -->
+  <log history="3" location="C:\Logs\1C\techlog\COMMON">
+    <property name="all"/>
+    <event>
+      <eq property="Name" value="ADMIN"/>
+    </event>
+    <event>
+      <eq property="Name" value="ATTN"/>
+    </event>
+    <event>
+      <eq property="Name" value="PROC"/>
+    </event>
+    <event>
+      <eq property="Name" value="EXCP"/>
+    </event>
+    <event>
+      <eq property="Name" value="QERR"/>
+    </event>
+  </log>
+
+  <!-- Блокировки и таймауты -->
+  <log history="3" location="C:\Logs\1C\techlog\TLOCK">
+    <property name="all"/>
+    <event>
+      <eq property="Name" value="TLOCK"/>
+      <ne property="WaitConnections" value=""/>
+    </event>
+    <event>
+      <eq property="Name" value="TDEADLOCK"/>
+    </event>
+    <event>
+      <eq property="Name" value="TTIMEOUT"/>
+    </event>
+  </log>
+
+  <!-- Длительные операции -->
+  <log history="3" location="C:\Logs\1C\techlog\LONGDURATIONINFO">
+    <property name="all"/>
+    <event>
+      <ne property="Name" value="PROC"/>
+      <ne property="Name" value="CONN"/>
+      <ne property="Name" value="LONGDURATIONINFO"/>
+      <gt property="Duration" value="10000000"/>
+    </event>
+    <event>
+      <eq property="Name" value="LONGDURATIONINFO"/>
+      <gt property="Duration" value="10000000"/>
+    </event>
+  </log>
+</config>

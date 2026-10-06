@@ -1,0 +1,40 @@
+## Build and Publish outputs
+bin/
+obj/
+dumps/
+!publish/
+!publish/**
+publish/**/runtimes/
+runtimes/
+logs/
+state.json
+ui_state.json
+appsettings.local.json
+appsettings.Production.json
+appsettings.*.local.json
+*.tmp
+*.log
+CLEANUP_EVENTLOG.ps1
+
+## User-specific files and IDEs
+.vs/
+.idea/
+*.user
+*.userosscache
+*.sln.docstates
+.vscode/
+
+## OS generated files
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+## Database & Temporary Session Cache
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.sqlite-shm
+*.sqlite-wal
+scratch/
